@@ -1,0 +1,207 @@
+---
+title: "Ready Biodegradability"
+output:
+  pdf_document: default
+  html_notebook: default
+date: "`r format(Sys.time(), '%Y-%m-%d')`"
+---
+
+```{r}
+library(reticulate)
+library(tidyverse)
+library(magrittr)
+library(caret)
+```
+
+```{r}
+getwd()
+```
+
+#### read data
+
+```{python}
+import pandas as pd
+import numpy as np
+from rdkit import Chem
+from rdkit.Chem import rdmolops
+
+df = pd.read_csv('C:/Users/us16120/Projects/Cheminformatics/readybiodegradability/data/processed/alles.csv', header = 0)
+df = df.drop(['Unnamed: 0'], axis = 1)
+
+for i, row in df.iterrows():
+    df.loc[i, 'CanonicalSMILES'] = Chem.MolToSmiles(Chem.MolFromSmiles(row['SMILES']))
+    
+for i, row in df.iterrows():
+    df.loc[i, 'NoStereo'] = df.loc[i, 'CanonicalSMILES'].replace('//', '').\
+    replace('/', '').replace('\\\\', '').replace('\\', '').\
+    replace('@@', '').replace('@', '')
+    
+for i, row in df.iterrows():
+    df.loc[i, 'SMILESbeta'] = Chem.MolToSmiles(Chem.MolFromSmiles(row['NoStereo'])) 
+
+df.sample(5).head()
+```
+
+##### duplicate records
+
+```{r}
+df <- py$df
+head(df)
+dim(df)
+length(unique(df$SMILESbeta))
+```
+
+
+```{r}
+df$ReadyBiodeg <- ifelse(df$EndPt == 'RB', 1, 0)
+# grps: molecules with discrepancies in reported bidegradablity
+grps <- df %>%
+  group_by(SMILESbeta) %>%
+  summarise(count = n(), qaz = sum(ReadyBiodeg), remainder = qaz %% count) %>%
+  filter(remainder > 0)
+# remove grps from df
+df <- anti_join(df, grps)
+# keep unique molecules
+df <- df[!duplicated(df$SMILESbeta), ]
+df <- df[ , c('SMILES', 'SMILESbeta', 'EndPt', 'ReadyBiodeg')]
+dim(df)
+head(df)
+```
+
+```{r}
+write.csv(df, 'C:/Users/us16120/Projects/Cheminformatics/readybiodegradability/data/processed/alles02.csv')
+```
+
+##### calculate descriptors
+
+```{python}
+
+df = r.df
+
+from rdkit import Chem
+from rdkit.Chem import Descriptors
+from rdkit.ML.Descriptors import MoleculeDescriptors
+
+nms = [x[0] for x in Descriptors._descList]
+calc = MoleculeDescriptors.MolecularDescriptorCalculator(nms)
+for i in range(len(df)):
+    try:
+        descrs = calc.CalcDescriptors(Chem.MolFromSmiles(df.iloc[i, 0]))
+        for x in range(len(descrs)):
+            df.at[i, str(nms[x])] = descrs[x]
+    except:
+        for x in range(len(descrs)):
+            df.at[i, str(nms[x])] = 'NaN'   
+            
+df = df.replace([np.inf, -np.inf], np.nan)
+df = df.dropna()
+df = df.reset_index(drop=True)
+
+df.shape
+df.sample(5).head()
+```
+
+##### split dataset: train & test
+
+```{r}
+
+df <- py$df
+
+set.seed(350)
+trainIndex <- createDataPartition(df$ReadyBiodeg, p = .8, 
+                                  list = FALSE, 
+                                  times = 1)
+
+train <- df[trainIndex, ]
+test <- df[-trainIndex, ]
+
+X_train <- train %>%
+  select(-SMILES, -InChI, -EndPt, -ReadyBiodeg)
+y_train <- train %>%
+  select(ReadyBiodeg) %>%
+  data.frame() %>%
+  mutate(ReadyBiodeg = as.factor(ReadyBiodeg))
+
+X_test <- test %>%
+  select(-SMILES, -InChI, -EndPt, -ReadyBiodeg)
+y_test <- test %>%
+  select(ReadyBiodeg) %>%
+  data.frame() %>%
+  mutate(ReadyBiodeg = as.factor(ReadyBiodeg))
+```
+
+##### curate data
+
+##### near-zero variance descriptors
+
+```{r}
+nzv <- nearZeroVar(X_train, freqCut = 100/0)
+X_train <- X_train[ , -nzv]
+### and
+X_test <- X_test[ , -nzv]
+```
+
+##### highly correlated descriptors
+
+```{r}
+correlations <- cor(X_train)
+corrplot::corrplot(correlations, order = 'hclust')
+highCorr <- findCorrelation(correlations, cutoff = 0.85)
+X_train <- X_train[ , -highCorr]
+### and
+X_test <- X_test[ , -highCorr]
+
+correlations <- cor(X_train)
+corrplot::corrplot(correlations, order = 'hclust')
+```
+
+##### preprocess descriptors (center & scale)
+
+```{r}
+preProcValues <- preProcess(X_train, method = c("center", "scale"))
+
+X_train <- predict(preProcValues, X_train)
+X_test <- predict(preProcValues, X_test)
+```
+
+##### linear combinations
+
+```{r}
+comboInfo <- findLinearCombos(X_train) # returns NULL
+X_train <- X_train[ , -comboInfo$remove]
+### and
+X_test <- X_test[ , -comboInfo$remove]
+```
+
+##### applicability domain
+
+```{python}
+
+import pandas as pd
+import numpy as np
+from numpy import linalg
+
+train = r.X_train
+test = r.X_test
+
+col_names =  ['dist']
+distances = pd.DataFrame(columns = col_names)
+avgDist5 = pd.DataFrame(columns = col_names)
+
+for i in range(len(train)):
+    for j in range(len(train)):
+        True
+#        distances.loc[j, 'dist'] = np.linalg.norm(train[i] - train[j])
+#    euclid = distances.sort_values('dist').head(6).mean()
+#    avgDist5.loc[i, 'dist'] = euclid[0]
+    if (i % 50 == 0):
+        print(i)
+
+avgDist5.sample(5).head()
+
+```
+
+# 10 fold; repeat 3 times
+control <- trainControl(method='repeatedcv', 
+                        number=10, 
+                        repeats=3)
